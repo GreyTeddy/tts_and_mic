@@ -1,0 +1,10 @@
+[package]
+name = "virtual-audio-mixer-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.102"
+chrono = { version = "0.4.44", features = ["clock"] }
+cpal = "0.17.3"
+hound = "3.5.1"
