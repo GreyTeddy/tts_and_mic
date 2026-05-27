@@ -29,10 +29,11 @@ struct MixerState {
     input_channels: u16,
     mic_signal: f32,
     out_signal: f32,
+    tts_only_monitor: bool,
 }
 
 impl MixerState {
-    fn new(sample_rate: u32, input_channels: u16) -> Self {
+    fn new(sample_rate: u32, input_channels: u16, tts_only_monitor: bool) -> Self {
         let size = (sample_rate as usize) * (CHANNELS as usize) * RING_BUFFER_MS / 1000;
         Self {
             mic_ring: vec![0.0; size],
@@ -50,6 +51,7 @@ impl MixerState {
             input_channels,
             mic_signal: 0.0,
             out_signal: 0.0,
+            tts_only_monitor,
         }
     }
 
@@ -97,7 +99,7 @@ impl MixerState {
 
         for sample in data.iter_mut() {
             let mut val = 0.0;
-            if self.mon_started && self.mon_count > 0 {
+            if !self.tts_only_monitor && self.mon_started && self.mon_count > 0 {
                 val = self.mic_ring[self.mon_read];
                 self.mon_read = (self.mon_read + 1) % self.mic_ring.len();
                 self.mon_count -= 1;
@@ -112,6 +114,9 @@ impl MixerState {
 }
 
 fn main() -> Result<()> {
+    let tts_only_monitor = std::env::args().any(|a| a == "--tts-only-monitor" || a == "-tom");
+    let enable_monitor = tts_only_monitor || std::env::args().any(|a| a == "--monitor" || a == "-m");
+
     println!("\n=== Rust Virtual Audio Mixer ===");
 
     let host = cpal::default_host();
@@ -153,7 +158,7 @@ fn main() -> Result<()> {
             input_config.sample_rate, sample_rate);
     }
 
-    let state = Arc::new(Mutex::new(MixerState::new(sample_rate, input_channels)));
+    let state = Arc::new(Mutex::new(MixerState::new(sample_rate, input_channels, tts_only_monitor)));
 
     let play_state = Arc::clone(&state);
     let _output_stream = output_device.build_output_stream(
@@ -165,9 +170,6 @@ fn main() -> Result<()> {
     _output_stream.play()?;
 
     let mut monitor_stream = None;
-//    if monitoring_enabled {
-// ... removed block ...
-//    }
 
     let capture_state = Arc::clone(&state);
     let capture_stream = input_device.build_input_stream(
@@ -177,6 +179,10 @@ fn main() -> Result<()> {
         None
     )?;
     capture_stream.play()?;
+
+    if enable_monitor {
+        monitor_stream = start_monitor(&host, &state);
+    }
 
     println!("\n[SYSTEM ACTIVE] Type for TTS or 'exit' to quit.");
     print!("> ");
@@ -190,32 +196,14 @@ fn main() -> Result<()> {
                 monitor_stream = None;
                 println!("[MONITOR] Deactivated");
             } else {
-                if let Some(mon_device) = host.default_output_device() {
-                    let mon_config = match mon_device.default_output_config() {
-                        Ok(c) => c.config(),
-                        Err(e) => { eprintln!("[Error] Monitor config failed: {}", e); continue; }
-                    };
-                    let mon_state = Arc::clone(&state);
-                    match mon_device.build_output_stream(
-                        &mon_config,
-                        move |data, _| mon_state.lock().unwrap().fill_mon(data),
-                        |err| eprintln!("[Error] Monitor: {}", err),
-                        None
-                    ) {
-                        Ok(stream) => { 
-                            if let Err(e) = stream.play() {
-                                eprintln!("[Error] Could not play monitor stream: {}", e);
-                            } else {
-                                println!("[MONITOR] Activated on {}", mon_device.name().unwrap_or_else(|_| "Unknown".into()));
-                                monitor_stream = Some(stream);
-                            }
-                        }
-                        Err(e) => eprintln!("[Error] Could not build monitor stream: {}", e),
-                    }
-                } else {
-                    eprintln!("[Error] No default output device found");
-                }
+                monitor_stream = start_monitor(&host, &state);
             }
+            continue;
+        }
+        if text == "tts_only_monitor" {
+            let mut s = state.lock().unwrap();
+            s.tts_only_monitor = !s.tts_only_monitor;
+            println!("[MONITOR] Mode: {}", if s.tts_only_monitor { "TTS only" } else { "Mic + TTS" });
             continue;
         }
         if !text.is_empty() {
@@ -279,4 +267,37 @@ fn play_tts(text: &str, state: Arc<Mutex<MixerState>>) -> Result<()> {
     s.tts_mon_idx = 0;
     println!("[Mixer] Injecting TTS on mic: \"{}\"", text);
     Ok(())
+}
+
+fn start_monitor(host: &cpal::Host, state: &Arc<Mutex<MixerState>>) -> Option<cpal::Stream> {
+    let mon_device = host.default_output_device()?;
+    let mon_config = match mon_device.default_output_config() {
+        Ok(c) => c.config(),
+        Err(e) => { eprintln!("[Error] Monitor config failed: {}", e); return None; }
+    };
+    let mon_state = Arc::clone(state);
+    let mode_label = {
+        let s = state.lock().unwrap();
+        if s.tts_only_monitor { "TTS only" } else { "Mic + TTS" }
+    };
+    match mon_device.build_output_stream(
+        &mon_config,
+        move |data, _| mon_state.lock().unwrap().fill_mon(data),
+        |err| eprintln!("[Error] Monitor: {}", err),
+        None
+    ) {
+        Ok(stream) => {
+            if let Err(e) = stream.play() {
+                eprintln!("[Error] Could not play monitor stream: {}", e);
+                None
+            } else {
+                println!("[MONITOR] Activated on {} ({})", mon_device.name().unwrap_or_else(|_| "Unknown".into()), mode_label);
+                Some(stream)
+            }
+        }
+        Err(e) => {
+            eprintln!("[Error] Could not build monitor stream: {}", e);
+            None
+        }
+    }
 }
