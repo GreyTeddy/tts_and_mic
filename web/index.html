@@ -1,0 +1,852 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Virtual Audio Mixer</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: #000;
+        color: #ccc;
+        min-height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+      .container {
+        width: 500px;
+        padding: 32px;
+        background: #111;
+        border-radius: 16px;
+        border: 1px solid #333;
+      }
+      h1 {
+        font-size: 22px;
+        font-weight: 600;
+        margin-bottom: 4px;
+        color: #fff;
+        letter-spacing: -0.3px;
+      }
+      .subtitle {
+        font-size: 13px;
+        color: #666;
+        margin-bottom: 24px;
+      }
+      .section {
+        margin-bottom: 24px;
+      }
+      .section-title {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #666;
+        margin-bottom: 10px;
+      }
+
+      .screen {
+        display: none;
+      }
+      .screen.active {
+        display: block;
+      }
+
+      label {
+        font-size: 13px;
+        color: #888;
+        display: block;
+        margin-bottom: 4px;
+      }
+      select {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #333;
+        background: #1a1a1a;
+        color: #ccc;
+        font-size: 14px;
+        outline: none;
+        appearance: none;
+        cursor: pointer;
+        margin-bottom: 12px;
+      }
+      select:focus {
+        border-color: #fff;
+      }
+      select option {
+        background: #1a1a1a;
+        color: #ccc;
+      }
+      .loopback-tag {
+        color: #fff;
+        font-size: 11px;
+        margin-left: 6px;
+      }
+
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .checkbox-row input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        accent-color: #fff;
+        cursor: pointer;
+      }
+      .checkbox-row label {
+        margin-bottom: 0;
+        cursor: pointer;
+      }
+
+      .btn-row {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+        flex-wrap: wrap;
+      }
+      .btn {
+        padding: 10px 20px;
+        border-radius: 8px;
+        border: 1px solid #333;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .btn-primary {
+        background: #fff;
+        color: #000;
+        border-color: #fff;
+      }
+      .btn-primary:hover {
+        background: #ccc;
+      }
+      .btn-primary:disabled {
+        background: #222;
+        color: #555;
+        border-color: #333;
+        cursor: not-allowed;
+      }
+      .btn-secondary {
+        background: #1a1a1a;
+        color: #ccc;
+        border: 1px solid #333;
+      }
+      .btn-secondary:hover {
+        background: #2a2a2a;
+        border-color: #555;
+      }
+      .btn-danger {
+        background: #1a1a1a;
+        color: #ccc;
+        border-color: #555;
+      }
+      .btn-danger:hover {
+        background: #2a2a2a;
+        border-color: #888;
+      }
+      .btn-sm {
+        padding: 6px 14px;
+        font-size: 13px;
+      }
+      .btn-install {
+        background: #1a1a1a;
+        color: #ccc;
+        border-color: #555;
+      }
+      .btn-install:hover {
+        background: #2a2a2a;
+      }
+
+      .meter-group {
+        display: flex;
+        gap: 16px;
+        margin-bottom: 4px;
+      }
+      .meter-item {
+        flex: 1;
+      }
+      .meter-label {
+        font-size: 12px;
+        color: #888;
+        margin-bottom: 4px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .meter-track {
+        height: 8px;
+        background: #1a1a1a;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .meter-fill {
+        height: 100%;
+        border-radius: 4px;
+        transition: width 80ms ease;
+        width: 0%;
+      }
+      .meter-fill.mic {
+        background: #fff;
+      }
+      .meter-fill.out {
+        background: #888;
+      }
+
+      .volume-group {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .volume-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .volume-label {
+        font-size: 13px;
+        color: #888;
+        width: 36px;
+        flex-shrink: 0;
+      }
+      .volume-slider {
+        flex: 1;
+        -webkit-appearance: none;
+        appearance: none;
+        height: 6px;
+        background: #1a1a1a;
+        border-radius: 3px;
+        outline: none;
+        cursor: pointer;
+      }
+      .volume-slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #fff;
+        border: 2px solid #111;
+        cursor: pointer;
+        transition: transform 0.1s;
+      }
+      .volume-slider::-webkit-slider-thumb:hover {
+        transform: scale(1.2);
+      }
+      .volume-slider.tts-slider::-webkit-slider-thumb {
+        background: #888;
+      }
+      .volume-value {
+        font-size: 13px;
+        color: #888;
+        width: 44px;
+        text-align: right;
+        font-family: "SF Mono", monospace;
+      }
+
+      .segmented-control {
+        display: flex;
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid #333;
+        background: #1a1a1a;
+      }
+      .seg-option {
+        flex: 1;
+        padding: 8px 12px;
+        text-align: center;
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.15s;
+        color: #666;
+        user-select: none;
+        border-right: 1px solid #333;
+      }
+      .seg-option:last-child {
+        border-right: none;
+      }
+      .seg-option:hover {
+        background: #2a2a2a;
+        color: #999;
+      }
+      .seg-option.active {
+        background: #fff;
+        color: #000;
+      }
+      .seg-option.active-tts {
+        background: #555;
+        color: #fff;
+      }
+
+      .tts-input-group {
+        display: flex;
+        gap: 8px;
+      }
+      .tts-input {
+        flex: 1;
+        padding: 10px 14px;
+        border-radius: 8px;
+        border: 1px solid #333;
+        background: #1a1a1a;
+        color: #ccc;
+        font-size: 14px;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      .tts-input:focus {
+        border-color: #fff;
+      }
+      .tts-input::placeholder {
+        color: #555;
+      }
+
+      .footer {
+        font-size: 11px;
+        color: #444;
+        text-align: center;
+        margin-top: 20px;
+      }
+      .connection-status {
+        font-size: 11px;
+        margin-bottom: 16px;
+      }
+      .tts-active-indicator {
+        font-size: 12px;
+        color: #fff;
+        margin-top: 4px;
+        min-height: 18px;
+      }
+      .error-msg {
+        color: #888;
+        font-size: 13px;
+        margin-top: 8px;
+        min-height: 20px;
+      }
+      .status-bar {
+        font-size: 13px;
+        color: #fff;
+        margin-top: 8px;
+        min-height: 20px;
+      }
+      .installing {
+        color: #888;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Virtual Audio Mixer</h1>
+      <div class="connection-status" id="connectionStatus">Connected</div>
+
+      <!-- Setup Screen -->
+      <div class="screen" id="setupScreen">
+        <div class="subtitle">Configure your devices</div>
+
+        <div class="section">
+          <div class="section-title">Input Device</div>
+          <select id="inputSelect"></select>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Output Device</div>
+          <select id="outputSelect"></select>
+          <div class="checkbox-row" id="defaultInputRow" style="display: none">
+            <input type="checkbox" id="setDefaultInput" />
+            <label for="setDefaultInput"
+              >Set output device as macOS input device</label
+            >
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" id="startBtn" onclick="startAudio()">
+            Start Mixer
+          </button>
+          <button class="btn btn-secondary btn-sm" onclick="refreshDevices()">
+            Refresh
+          </button>
+          <button
+            class="btn btn-install btn-sm"
+            id="installBtn"
+            style="display: none"
+            onclick="installBlackhole()"
+          >
+            Install BlackHole 2ch
+          </button>
+        </div>
+        <div class="status-bar" id="setupStatus"></div>
+        <div class="error-msg" id="setupError"></div>
+      </div>
+
+      <!-- Main Screen -->
+      <div class="screen" id="mainScreen">
+        <div class="section">
+          <div class="section-title">Audio Levels</div>
+          <div class="meter-group">
+            <div class="meter-item">
+              <div class="meter-label">
+                <span>Mic</span><span id="micDb">-inf dB</span>
+              </div>
+              <div class="meter-track">
+                <div class="meter-fill mic" id="micMeter"></div>
+              </div>
+            </div>
+            <div class="meter-item">
+              <div class="meter-label">
+                <span>Output</span><span id="outDb">-inf dB</span>
+              </div>
+              <div class="meter-track">
+                <div class="meter-fill out" id="outMeter"></div>
+              </div>
+            </div>
+          </div>
+          <div class="tts-active-indicator" id="ttsActiveIndicator"></div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Volume</div>
+          <div class="volume-group">
+            <div class="volume-row">
+              <span class="volume-label">Mic</span>
+              <input
+                class="volume-slider mic-slider"
+                id="micVolume"
+                type="range"
+                min="0"
+                max="200"
+                value="100"
+              />
+              <span class="volume-value" id="micVolumeVal">100%</span>
+            </div>
+            <div class="volume-row">
+              <span class="volume-label">TTS</span>
+              <input
+                class="volume-slider tts-slider"
+                id="ttsVolume"
+                type="range"
+                min="0"
+                max="200"
+                value="100"
+              />
+              <span class="volume-value" id="ttsVolumeVal">100%</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Monitor Output</div>
+          <div class="segmented-control" id="monitorSeg">
+            <div
+              class="seg-option"
+              data-mode="off"
+              onclick="setMonitorMode('off')"
+            >
+              Off
+            </div>
+            <div
+              class="seg-option"
+              data-mode="monitor"
+              onclick="setMonitorMode('monitor')"
+            >
+              Monitor
+            </div>
+            <div
+              class="seg-option"
+              data-mode="tts-only"
+              onclick="setMonitorMode('tts-only')"
+            >
+              TTS Only
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Text-to-Speech</div>
+          <div class="tts-input-group">
+            <input
+              class="tts-input"
+              id="ttsInput"
+              type="text"
+              placeholder="Type something to speak..."
+              autofocus
+            />
+            <button class="btn btn-primary" id="speakBtn" onclick="speak()">
+              Speak
+            </button>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-danger btn-sm" onclick="stopAudio()">
+            Stop
+          </button>
+        </div>
+      </div>
+
+      <div class="footer">Rust Virtual Audio Mixer</div>
+    </div>
+
+    <script>
+      let monitorMode = "off";
+
+      // --- Screen switching ---
+
+      function showSetup() {
+        document.getElementById("setupScreen").classList.add("active");
+        document.getElementById("mainScreen").classList.remove("active");
+        refreshDevices();
+      }
+
+      function showMain() {
+        document.getElementById("setupScreen").classList.remove("active");
+        document.getElementById("mainScreen").classList.add("active");
+      }
+
+      // --- Device listing ---
+
+      let deviceCache = null;
+
+      function refreshDevices() {
+        const statusEl = document.getElementById("setupStatus");
+        statusEl.textContent = "Loading devices...";
+        document.getElementById("setupError").textContent = "";
+        fetch("/devices")
+          .then((r) => r.json())
+          .then((data) => {
+            deviceCache = data;
+            statusEl.textContent = "";
+
+            const inputSel = document.getElementById("inputSelect");
+            inputSel.innerHTML = "";
+            data.input_devices.forEach((d) => {
+              const opt = document.createElement("option");
+              opt.value = d.index;
+              opt.textContent = d.name;
+              inputSel.appendChild(opt);
+            });
+            if (data.default_input != null && data.input_devices.length > 0) {
+              inputSel.value = data.default_input;
+            }
+
+            const outputSel = document.getElementById("outputSelect");
+            outputSel.innerHTML = "";
+            data.output_devices.forEach((d) => {
+              const opt = document.createElement("option");
+              opt.value = d.index;
+              opt.textContent = d.name + (d.is_loopback ? " (Loopback)" : "");
+              opt.dataset.loopback = d.is_loopback;
+              outputSel.appendChild(opt);
+            });
+            if (data.default_output != null && data.output_devices.length > 0) {
+              outputSel.value = data.default_output;
+            }
+
+            document.getElementById("installBtn").style.display =
+              !data.has_loopback && data.can_install_blackhole ? "" : "none";
+
+            updateDefaultInputVisibility();
+          })
+          .catch((err) => {
+            statusEl.textContent = "";
+            document.getElementById("setupError").textContent =
+              "Failed to load devices: " + err;
+          });
+      }
+
+      document
+        .getElementById("outputSelect")
+        .addEventListener("change", updateDefaultInputVisibility);
+
+      function updateDefaultInputVisibility() {
+        const sel = document.getElementById("outputSelect");
+        const opt = sel.options[sel.selectedIndex];
+        const isLoopback = opt && opt.dataset.loopback === "true";
+        document.getElementById("defaultInputRow").style.display = isLoopback
+          ? ""
+          : "none";
+      }
+
+      // --- Install BlackHole ---
+
+      function installBlackhole() {
+        const btn = document.getElementById("installBtn");
+        const status = document.getElementById("setupStatus");
+        btn.disabled = true;
+        status.className = "status-bar installing";
+        status.textContent =
+          "Installing BlackHole 2ch... (this may take a moment)";
+        fetch("/install-blackhole", { method: "POST" })
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.success) {
+              status.className = "status-bar";
+              status.textContent = "BlackHole installed! Refreshing devices...";
+              setTimeout(refreshDevices, 3000);
+            } else {
+              status.className = "status-bar";
+              status.textContent = "";
+              document.getElementById("setupError").textContent =
+                "Installation failed: " + (data.error || "unknown error");
+            }
+          })
+          .catch((err) => {
+            status.className = "status-bar";
+            status.textContent = "";
+            document.getElementById("setupError").textContent =
+              "Install error: " + err;
+          })
+          .finally(() => {
+            btn.disabled = false;
+          });
+      }
+
+      // --- Start / Stop ---
+
+      function startAudio() {
+        const input = parseInt(document.getElementById("inputSelect").value);
+        const output = parseInt(document.getElementById("outputSelect").value);
+        const setDefault = document.getElementById("setDefaultInput").checked;
+
+        const btn = document.getElementById("startBtn");
+        const status = document.getElementById("setupStatus");
+        btn.disabled = true;
+        status.textContent = "Starting...";
+        document.getElementById("setupError").textContent = "";
+
+        fetch("/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            input,
+            output,
+            set_default_input: setDefault,
+          }),
+        })
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.success) {
+              showMain();
+              initMainControls();
+            } else {
+              status.textContent = "";
+              document.getElementById("setupError").textContent =
+                data.error || "Failed to start";
+            }
+          })
+          .catch((err) => {
+            status.textContent = "";
+            document.getElementById("setupError").textContent = "Error: " + err;
+          })
+          .finally(() => {
+            btn.disabled = false;
+          });
+      }
+
+      function stopAudio() {
+        fetch("/stop", { method: "POST" })
+          .then((r) => r.json())
+          .then(() => {
+            showSetup();
+          })
+          .catch(() => {
+            showSetup();
+          });
+      }
+
+      // --- Main screen controls ---
+
+      function initMainControls() {
+        monitorMode = "off";
+        document.getElementById("micVolume").value = 100;
+        document.getElementById("ttsVolume").value = 100;
+        document.getElementById("micVolumeVal").textContent = "100%";
+        document.getElementById("ttsVolumeVal").textContent = "100%";
+        document.getElementById("ttsInput").value = "";
+        document.getElementById("ttsInput").focus();
+      }
+
+      function updateMonitorUI() {
+        const options = document.querySelectorAll("#monitorSeg .seg-option");
+        options.forEach((el) => {
+          el.classList.remove("active", "active-tts");
+          if (el.dataset.mode === monitorMode) {
+            el.classList.add(
+              monitorMode === "tts-only" ? "active-tts" : "active",
+            );
+          }
+        });
+      }
+
+      function setMonitorMode(mode) {
+        fetch("/monitor-mode", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode }),
+        })
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.monitor_mode) {
+              monitorMode = data.monitor_mode;
+              updateMonitorUI();
+            }
+          })
+          .catch(() => {});
+      }
+
+      function speak() {
+        const input = document.getElementById("ttsInput");
+        const text = input.value.trim();
+        if (!text) return;
+        const btn = document.getElementById("speakBtn");
+        btn.disabled = true;
+        btn.textContent = "Speaking...";
+        fetch("/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        })
+          .then((r) => r.json())
+          .then(() => {
+            input.value = "";
+          })
+          .catch(() => {})
+          .finally(() => {
+            btn.disabled = false;
+            btn.textContent = "Speak";
+            input.focus();
+          });
+      }
+
+      document.getElementById("ttsInput").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") speak();
+      });
+
+      // --- Volume debounce ---
+
+      let volumeTimers = {};
+      function sendVolume(type) {
+        clearTimeout(volumeTimers[type]);
+        volumeTimers[type] = setTimeout(() => {
+          const slider = document.getElementById(
+            type === "mic" ? "micVolume" : "ttsVolume",
+          );
+          const val = parseFloat(slider.value) / 100;
+          const body = {};
+          body[type] = val;
+          fetch("/volume", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }).catch(() => {});
+        }, 80);
+      }
+
+      document
+        .getElementById("micVolume")
+        .addEventListener("input", function () {
+          document.getElementById("micVolumeVal").textContent =
+            this.value + "%";
+          sendVolume("mic");
+        });
+      document
+        .getElementById("ttsVolume")
+        .addEventListener("input", function () {
+          document.getElementById("ttsVolumeVal").textContent =
+            this.value + "%";
+          sendVolume("tts");
+        });
+
+      // --- Status polling ---
+
+      function updateStatus() {
+        fetch("/status")
+          .then((r) => r.json())
+          .then((data) => {
+            document.getElementById("connectionStatus").textContent =
+              "Connected";
+            document.getElementById("connectionStatus").style.color = "#4ade80";
+
+            if (!data.audio_running) {
+              if (
+                document
+                  .getElementById("mainScreen")
+                  .classList.contains("active")
+              ) {
+                showSetup();
+              }
+              return;
+            }
+
+            // Update meters
+            const micVal = Math.min(data.mic_signal * 2, 1.0);
+            const outVal = Math.min(data.out_signal * 2, 1.0);
+            document.getElementById("micMeter").style.width =
+              micVal * 100 + "%";
+            document.getElementById("outMeter").style.width =
+              outVal * 100 + "%";
+            document.getElementById("micDb").textContent = toDb(
+              data.mic_signal,
+            );
+            document.getElementById("outDb").textContent = toDb(
+              data.out_signal,
+            );
+
+            // TTS indicator
+            document.getElementById("ttsActiveIndicator").textContent =
+              data.tts_active ? "Speaking..." : "";
+
+            // Monitor mode
+            monitorMode = data.monitor_mode;
+            updateMonitorUI();
+
+            // Volumes
+            document.getElementById("micVolume").value = Math.round(
+              data.mic_volume * 100,
+            );
+            document.getElementById("micVolumeVal").textContent =
+              Math.round(data.mic_volume * 100) + "%";
+            document.getElementById("ttsVolume").value = Math.round(
+              data.tts_volume * 100,
+            );
+            document.getElementById("ttsVolumeVal").textContent =
+              Math.round(data.tts_volume * 100) + "%";
+          })
+          .catch(() => {
+            document.getElementById("connectionStatus").textContent =
+              "Disconnected";
+            document.getElementById("connectionStatus").style.color = "#ef4444";
+          });
+      }
+
+      function toDb(val) {
+        if (val <= 0.00001) return "-inf dB";
+        return (20 * Math.log10(val)).toFixed(1) + " dB";
+      }
+
+      // --- Startup ---
+
+      // Check initial status to decide which screen to show
+      fetch("/status")
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.audio_running) {
+            showMain();
+            initMainControls();
+          } else {
+            showSetup();
+          }
+        })
+        .catch(() => {
+          showSetup();
+        });
+
+      setInterval(updateStatus, 150);
+    </script>
+  </body>
+</html>
