@@ -2,6 +2,8 @@
 
 A macOS virtual audio mixer that captures your microphone, mixes in text-to-speech, and routes the combined audio to a virtual loopback device (BlackHole) so other apps can use it as an input source.
 
+<img width="475" height="509" alt="image" src="https://github.com/user-attachments/assets/56d1ba87-5ed3-46ae-bb52-0f7eda4f0c4c" />
+
 Everything is controlled through a web GUI at `http://127.0.0.1:17399`.
 
 ## Features
