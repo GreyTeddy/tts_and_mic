@@ -762,66 +762,79 @@
           sendVolume("tts");
         });
 
-      // --- Status polling ---
+      // --- WebSocket ---
 
-      function updateStatus() {
-        fetch("/status")
-          .then((r) => r.json())
-          .then((data) => {
-            document.getElementById("connectionStatus").textContent =
-              "Connected";
-            document.getElementById("connectionStatus").style.color = "#4ade80";
+      let ws = null;
+      let wsReconnectTimer = null;
 
-            if (!data.audio_running) {
-              if (
-                document
-                  .getElementById("mainScreen")
-                  .classList.contains("active")
-              ) {
-                showSetup();
-              }
-              return;
-            }
+      function connectWebSocket() {
+        if (ws && ws.readyState === WebSocket.OPEN) return;
+        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
-            // Update meters
-            const micVal = Math.min(data.mic_signal * 2, 1.0);
-            const outVal = Math.min(data.out_signal * 2, 1.0);
-            document.getElementById("micMeter").style.width =
-              micVal * 100 + "%";
-            document.getElementById("outMeter").style.width =
-              outVal * 100 + "%";
-            document.getElementById("micDb").textContent = toDb(
-              data.mic_signal,
-            );
-            document.getElementById("outDb").textContent = toDb(
-              data.out_signal,
-            );
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            renderStatus(data);
+          } catch (_) {}
+        };
 
-            // TTS indicator
-            document.getElementById("ttsActiveIndicator").textContent =
-              data.tts_active ? "Speaking..." : "";
+        ws.onclose = () => {
+          ws = null;
+          document.getElementById("connectionStatus").textContent =
+            "Disconnected";
+          document.getElementById("connectionStatus").style.color = "#888";
+          clearTimeout(wsReconnectTimer);
+          wsReconnectTimer = setTimeout(connectWebSocket, 1000);
+        };
 
-            // Monitor mode
-            monitorMode = data.monitor_mode;
-            updateMonitorUI();
+        ws.onerror = () => {
+          ws.close();
+        };
+      }
 
-            // Volumes
-            document.getElementById("micVolume").value = Math.round(
-              data.mic_volume * 100,
-            );
-            document.getElementById("micVolumeVal").textContent =
-              Math.round(data.mic_volume * 100) + "%";
-            document.getElementById("ttsVolume").value = Math.round(
-              data.tts_volume * 100,
-            );
-            document.getElementById("ttsVolumeVal").textContent =
-              Math.round(data.tts_volume * 100) + "%";
-          })
-          .catch(() => {
-            document.getElementById("connectionStatus").textContent =
-              "Disconnected";
-            document.getElementById("connectionStatus").style.color = "#ef4444";
-          });
+      function renderStatus(data) {
+        document.getElementById("connectionStatus").textContent = "Connected";
+        document.getElementById("connectionStatus").style.color = "#fff";
+
+        if (!data.audio_running) {
+          if (
+            document
+              .getElementById("mainScreen")
+              .classList.contains("active")
+          ) {
+            showSetup();
+          }
+          return;
+        }
+
+        // Update meters
+        const micVal = Math.min(data.mic_signal * 2, 1.0);
+        const outVal = Math.min(data.out_signal * 2, 1.0);
+        document.getElementById("micMeter").style.width = micVal * 100 + "%";
+        document.getElementById("outMeter").style.width = outVal * 100 + "%";
+        document.getElementById("micDb").textContent = toDb(data.mic_signal);
+        document.getElementById("outDb").textContent = toDb(data.out_signal);
+
+        // TTS indicator
+        document.getElementById("ttsActiveIndicator").textContent =
+          data.tts_active ? "Speaking..." : "";
+
+        // Monitor mode
+        monitorMode = data.monitor_mode;
+        updateMonitorUI();
+
+        // Volumes
+        document.getElementById("micVolume").value = Math.round(
+          data.mic_volume * 100,
+        );
+        document.getElementById("micVolumeVal").textContent =
+          Math.round(data.mic_volume * 100) + "%";
+        document.getElementById("ttsVolume").value = Math.round(
+          data.tts_volume * 100,
+        );
+        document.getElementById("ttsVolumeVal").textContent =
+          Math.round(data.tts_volume * 100) + "%";
       }
 
       function toDb(val) {
@@ -846,7 +859,7 @@
           showSetup();
         });
 
-      setInterval(updateStatus, 150);
+      connectWebSocket();
     </script>
   </body>
 </html>

@@ -7,6 +7,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use axum::{
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::State,
     http::StatusCode,
     response::{Html, IntoResponse, Json},
@@ -180,7 +181,7 @@ async fn index_handler() -> Html<&'static str> {
     Html(include_str!("../web/index.html"))
 }
 
-async fn status_handler(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
+fn build_status(state: &AppState) -> StatusResponse {
     let mut guard = state.mixer.lock().unwrap();
     if let Some(ref mut mixer) = *guard {
         let (mic_signal, out_signal) = mixer.read_signal_levels();
@@ -188,7 +189,7 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<StatusRespon
         let monitor_mode = if !has_monitor { "off" }
             else if mixer.tts_only_monitor { "tts-only" }
             else { "monitor" };
-        Json(StatusResponse {
+        StatusResponse {
             audio_running: true,
             mic_signal,
             out_signal,
@@ -196,9 +197,9 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<StatusRespon
             tts_volume: mixer.tts_volume,
             monitor_mode: monitor_mode.to_string(),
             tts_active: mixer.is_tts_active(),
-        })
+        }
     } else {
-        Json(StatusResponse {
+        StatusResponse {
             audio_running: false,
             mic_signal: 0.0,
             out_signal: 0.0,
@@ -206,7 +207,46 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<StatusRespon
             tts_volume: 1.0,
             monitor_mode: "off".to_string(),
             tts_active: false,
-        })
+        }
+    }
+}
+
+async fn status_handler(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
+    Json(build_status(&state))
+}
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
+}
+
+async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(150));
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let status = build_status(&state);
+                if let Ok(json) = serde_json::to_string(&status) {
+                    if socket.send(Message::Text(json)).await.is_err() {
+                        break;
+                    }
+                }
+            }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Text(t))) => {
+                        if t == "ping" {
+                            let _ = socket.send(Message::Text("pong".into())).await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 }
 
@@ -525,6 +565,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/status", get(status_handler))
+        .route("/ws", get(ws_handler))
         .route("/devices", get(devices_handler))
         .route("/start", post(start_handler))
         .route("/stop", post(stop_handler))
