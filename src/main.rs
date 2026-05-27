@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
+use coreaudio_sys::*;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::ffi::CStr;
 use std::io::{self, BufRead, Write};
+use std::mem;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
@@ -138,12 +141,14 @@ fn main() -> Result<()> {
 
     // warn if output is not a loopback device (other apps won't hear it)
     if let Ok(desc) = output_device.description() {
-        let name = desc.name();
+        let name = desc.name().to_owned();
         let is_loopback = LOOPBACK_KEYWORDS.iter().any(|k| name.to_lowercase().contains(k));
         if !is_loopback {
             eprintln!("[WARN] \"{}\" is not a loopback/virtual device.", name);
             eprintln!("[WARN] Other apps (Zoom, Discord, etc.) won't hear the mixed audio.");
             eprintln!("[WARN] Select a loopback device (BlackHole, etc.) or use --install to install one.");
+        } else {
+            prompt_set_default_input(&name)?;
         }
     }
 
@@ -357,6 +362,109 @@ fn install_blackhole() -> Result<Option<usize>> {
     }
     eprintln!("[WARN] BlackHole installed but not found in device list. Try restarting.");
     Ok(None)
+}
+
+fn prompt_set_default_input(device_name: &str) -> Result<()> {
+    print!("\nSet \"{}\" as the default input device on macOS? [Y/n]: ", device_name);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    if input.trim().to_lowercase() != "n" {
+        set_default_input_device(device_name)?;
+    }
+    Ok(())
+}
+
+fn set_default_input_device(device_name: &str) -> Result<()> {
+    unsafe {
+        let address = AudioObjectPropertyAddress {
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        };
+
+        // get device list size
+        let mut data_size: u32 = 0;
+        let status = AudioObjectGetPropertyDataSize(
+            kAudioObjectSystemObject,
+            &address,
+            0,
+            std::ptr::null(),
+            &mut data_size,
+        );
+        if status != kAudioHardwareNoError as i32 {
+            anyhow::bail!("Failed to get device list size");
+        }
+
+        let device_count = data_size as usize / mem::size_of::<AudioDeviceID>();
+        let mut device_ids = vec![0u32; device_count];
+        let mut data_size = data_size;
+
+        let status = AudioObjectGetPropertyData(
+            kAudioObjectSystemObject,
+            &address,
+            0,
+            std::ptr::null(),
+            &mut data_size,
+            device_ids.as_mut_ptr() as *mut std::ffi::c_void,
+        );
+        if status != kAudioHardwareNoError as i32 {
+            anyhow::bail!("Failed to get device list");
+        }
+
+        // find the target device by name
+        let mut target_id = None;
+        for &device_id in &device_ids {
+            let name_addr = AudioObjectPropertyAddress {
+                mSelector: kAudioDevicePropertyDeviceName,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain,
+            };
+            let mut name_buf = [0u8; 256];
+            let mut name_size: u32 = 256;
+            let status = AudioObjectGetPropertyData(
+                device_id,
+                &name_addr,
+                0,
+                std::ptr::null(),
+                &mut name_size,
+                name_buf.as_mut_ptr() as *mut std::ffi::c_void,
+            );
+            if status == kAudioHardwareNoError as i32 {
+                if let Ok(c_str) = CStr::from_ptr(name_buf.as_ptr() as *const std::os::raw::c_char).to_str() {
+                    if c_str.to_lowercase().contains(&device_name.to_lowercase()) {
+                        target_id = Some(device_id);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let device_id = match target_id {
+            Some(id) => id,
+            None => anyhow::bail!("Device \"{}\" not found in CoreAudio device list", device_name),
+        };
+
+        // set as default input device
+        let set_addr = AudioObjectPropertyAddress {
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        };
+        let status = AudioObjectSetPropertyData(
+            kAudioObjectSystemObject,
+            &set_addr,
+            0,
+            std::ptr::null(),
+            mem::size_of::<AudioDeviceID>() as u32,
+            &device_id as *const AudioDeviceID as *const std::ffi::c_void,
+        );
+        if status != kAudioHardwareNoError as i32 {
+            anyhow::bail!("Failed to set default input device (error: {})", status);
+        }
+        println!("[OK] \"{}\" set as default input device.", device_name);
+        Ok(())
+    }
 }
 
 fn play_tts(text: &str, state: Arc<Mutex<MixerState>>) -> Result<()> {

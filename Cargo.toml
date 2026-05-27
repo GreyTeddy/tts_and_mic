@@ -6,5 +6,6 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.102"
 chrono = { version = "0.4.44", features = ["clock"] }
+coreaudio-sys = "0.2.16"
 cpal = "0.17.3"
 hound = "3.5.1"
