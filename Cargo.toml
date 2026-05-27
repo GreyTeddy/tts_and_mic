@@ -1,5 +1,5 @@
 [package]
-name = "virtual-audio-mixer-rs"
+name = "tts-and-mic"
 version = "0.1.0"
 edition = "2021"
 

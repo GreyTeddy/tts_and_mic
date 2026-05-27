@@ -550,7 +550,7 @@ fn stop_audio(state: &AppState) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("\n=== Rust Virtual Audio Mixer ===");
+    println!("\n=== TTS and Mic (Beta) ===");
 
     let app_state = Arc::new(AppState {
         mixer: Arc::new(Mutex::new(None)),
