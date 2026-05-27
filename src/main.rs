@@ -26,12 +26,13 @@ struct MixerState {
     tts_mon_idx: usize,
     
     sample_rate: u32,
+    input_channels: u16,
     mic_signal: f32,
     out_signal: f32,
 }
 
 impl MixerState {
-    fn new(sample_rate: u32) -> Self {
+    fn new(sample_rate: u32, input_channels: u16) -> Self {
         let size = (sample_rate as usize) * (CHANNELS as usize) * RING_BUFFER_MS / 1000;
         Self {
             mic_ring: vec![0.0; size],
@@ -46,6 +47,7 @@ impl MixerState {
             tts_main_idx: 0,
             tts_mon_idx: 0,
             sample_rate,
+            input_channels,
             mic_signal: 0.0,
             out_signal: 0.0,
         }
@@ -53,7 +55,7 @@ impl MixerState {
 
     fn push_input(&mut self, samples: &[f32]) {
         let len = self.mic_ring.len();
-        for chunk in samples.chunks_exact(CHANNELS as usize) {
+        for chunk in samples.chunks_exact(self.input_channels as usize) {
             let mono = chunk[0];
             for _ in 0..CHANNELS {
                 self.mic_ring[self.mic_write] = mono;
@@ -124,9 +126,34 @@ fn main() -> Result<()> {
 
     let config = output_device.default_output_config()?.config();
     let sample_rate = config.sample_rate;
-    println!("[CONFIG] Sample Rate: {} Hz", sample_rate);
+    let mut input_config = input_device.default_input_config()?.config();
+    let mut input_channels = input_config.channels;
+    println!("[CONFIG] Output: {} Hz, Input default: {} Hz ({} channels)", sample_rate, input_config.sample_rate, input_channels);
 
-    let state = Arc::new(Mutex::new(MixerState::new(sample_rate)));
+    // Match input sample rate to output to prevent ring buffer drift/static
+    if sample_rate != input_config.sample_rate {
+        if let Ok(configs) = input_device.supported_input_configs() {
+            for c in configs {
+                if c.sample_format() == cpal::SampleFormat::F32
+                    && c.min_sample_rate() <= sample_rate
+                    && c.max_sample_rate() >= sample_rate
+                {
+                    if let Some(matched) = c.try_with_sample_rate(sample_rate) {
+                        input_config = matched.config();
+                        input_channels = input_config.channels;
+                        println!("[CONFIG] Matched input to output sample rate: {} Hz", sample_rate);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if sample_rate != input_config.sample_rate {
+        eprintln!("[WARN] Input sample rate ({}) differs from output ({}). Ring buffer may drift.",
+            input_config.sample_rate, sample_rate);
+    }
+
+    let state = Arc::new(Mutex::new(MixerState::new(sample_rate, input_channels)));
 
     let play_state = Arc::clone(&state);
     let _output_stream = output_device.build_output_stream(
@@ -144,7 +171,7 @@ fn main() -> Result<()> {
 
     let capture_state = Arc::clone(&state);
     let capture_stream = input_device.build_input_stream(
-        &config,
+        &input_config,
         move |data: &[f32], _| capture_state.lock().unwrap().push_input(data),
         |err| eprintln!("[Error] Input: {}", err),
         None
@@ -166,7 +193,7 @@ fn main() -> Result<()> {
                 if let Some(mon_device) = host.default_output_device() {
                     let mon_config = match mon_device.default_output_config() {
                         Ok(c) => c.config(),
-                        Err(e) => { eprintln!("[Error] Default output config failed: {}", e); continue; }
+                        Err(e) => { eprintln!("[Error] Monitor config failed: {}", e); continue; }
                     };
                     let mon_state = Arc::clone(&state);
                     match mon_device.build_output_stream(
