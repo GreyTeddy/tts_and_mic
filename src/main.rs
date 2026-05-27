@@ -7,6 +7,11 @@ use std::sync::{Arc, Mutex};
 const CHANNELS: u16 = 2;
 const RING_BUFFER_MS: usize = 1000;
 
+const LOOPBACK_KEYWORDS: &[&str] = &[
+    "blackhole", "loopback", "soundflower",
+    "eqmac", "menubus", "virtual", "wavtap",
+];
+
 struct MixerState {
     mic_ring: Vec<f32>,
     mic_write: usize,
@@ -116,12 +121,31 @@ impl MixerState {
 fn main() -> Result<()> {
     let tts_only_monitor = std::env::args().any(|a| a == "--tts-only-monitor" || a == "-tom");
     let enable_monitor = tts_only_monitor || std::env::args().any(|a| a == "--monitor" || a == "-m");
+    let auto_install = std::env::args().any(|a| a == "--install" || a == "-i");
+    let speaker_mode = std::env::args().any(|a| a == "--speaker" || a == "-s");
 
     println!("\n=== Rust Virtual Audio Mixer ===");
 
     let host = cpal::default_host();
+
     let input_device = select_device(host.input_devices()?, "Input (Microphone)", "MacBook Pro Microphone")?;
-    let output_device = select_device(host.output_devices()?, "Output (Virtual Device)", "BlackHole 2ch")?;
+
+    let output_device = if speaker_mode {
+        host.default_output_device().context("No output device available")?
+    } else {
+        select_output_device(&host, auto_install)?
+    };
+
+    // warn if output is not a loopback device (other apps won't hear it)
+    if let Ok(desc) = output_device.description() {
+        let name = desc.name();
+        let is_loopback = LOOPBACK_KEYWORDS.iter().any(|k| name.to_lowercase().contains(k));
+        if !is_loopback {
+            eprintln!("[WARN] \"{}\" is not a loopback/virtual device.", name);
+            eprintln!("[WARN] Other apps (Zoom, Discord, etc.) won't hear the mixed audio.");
+            eprintln!("[WARN] Select a loopback device (BlackHole, etc.) or use --install to install one.");
+        }
+    }
 
 //    print!("\nEnable monitoring to default speaker? [y/N]: ");
 //    io::stdout().flush()?;
@@ -222,7 +246,7 @@ fn select_device(devices: impl Iterator<Item = cpal::Device>, prompt: &str, defa
     println!("\n--- {} ---", prompt);
     let mut default_idx = None;
     for (i, d) in list.iter().enumerate() {
-        let name = d.name().unwrap_or_else(|_| "Unknown".into());
+        let name = d.description().map(|desc| desc.name().to_owned()).unwrap_or_else(|_| "Unknown".into());
         let matches = name.contains(default_match);
         if matches { default_idx = Some(i); }
         println!("[{}] {}{}", i, name, if matches { " (Default)" } else { "" });
@@ -239,6 +263,100 @@ fn select_device(devices: impl Iterator<Item = cpal::Device>, prompt: &str, defa
     }
     let idx: usize = input.parse().context("Invalid index")?;
     list.into_iter().nth(idx).context("Device out of range")
+}
+
+fn select_output_device(host: &cpal::Host, auto_install: bool) -> Result<cpal::Device> {
+    let devices: Vec<_> = host.output_devices()?.collect();
+
+    // auto-detect loopback device
+    let mut loopback_idx = None;
+    for (i, d) in devices.iter().enumerate() {
+        if let Ok(desc) = d.description() {
+            let name = desc.name();
+            let lower = name.to_lowercase();
+            if LOOPBACK_KEYWORDS.iter().any(|k| lower.contains(k)) {
+                loopback_idx = Some(i);
+                break;
+            }
+        }
+    }
+
+    let prompt = if loopback_idx.is_some() {
+        "Output (Loopback / Virtual Device)"
+    } else {
+        "Output Device"
+    };
+
+    // show devices
+    println!("\n--- {} ---", prompt);
+    for (i, d) in devices.iter().enumerate() {
+        let name = d.description().map(|desc| desc.name().to_owned()).unwrap_or_else(|_| "Unknown".into());
+        let is_loopback = LOOPBACK_KEYWORDS.iter().any(|k| name.to_lowercase().contains(k));
+        let tag = if Some(i) == loopback_idx { " (Default)" } else if is_loopback { " (Loopback)" } else { "" };
+        println!("[{}] {}{}", i, name, tag);
+    }
+
+    // if no loopback device, offer to install
+    if loopback_idx.is_none() && (auto_install || should_install_blackhole()?) {
+        loopback_idx = install_blackhole()?;
+    }
+
+    let default_hint = loopback_idx.map(|i| format!(" [Enter for {}]", i)).unwrap_or_default();
+    print!("Select index{}: ", default_hint);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+    if input.is_empty() {
+        if let Some(i) = loopback_idx {
+            return Ok(devices.into_iter().nth(i).context("Device not found")?);
+        }
+    }
+    if !input.is_empty() {
+        let idx: usize = input.parse().context("Invalid index")?;
+        return devices.into_iter().nth(idx).context("Device out of range");
+    }
+
+    // fallback: default output device (speakers)
+    host.default_output_device().context("No output device available")
+}
+
+fn should_install_blackhole() -> Result<bool> {
+    print!("\nNo loopback device found. Install BlackHole 2ch via Homebrew? [Y/n]: ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_lowercase() != "n")
+}
+
+fn install_blackhole() -> Result<Option<usize>> {
+    println!("[INSTALL] Installing BlackHole 2ch via Homebrew...");
+    println!("[INSTALL] This may require your admin password for the macOS installer.");
+    let status = Command::new("brew")
+        .args(&["install", "--cask", "blackhole-2ch"])
+        .status()
+        .context("Failed to run Homebrew. Is it installed?")?;
+    if !status.success() {
+        eprintln!("[WARN] BlackHole installation failed.");
+        return Ok(None);
+    }
+
+    println!("[INSTALL] BlackHole installer should restart the audio server automatically.");
+    println!("[INSTALL] If the device doesn't appear, try: sudo launchctl kickstart -p system/com.apple.audio.coreaudiod");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    // refresh device list
+    let host = cpal::default_host();
+    for (i, d) in host.output_devices()?.enumerate() {
+        if let Ok(desc) = d.description() {
+            if desc.name().to_lowercase().contains("blackhole") {
+                println!("[INSTALL] BlackHole 2ch installed successfully.");
+                return Ok(Some(i));
+            }
+        }
+    }
+    eprintln!("[WARN] BlackHole installed but not found in device list. Try restarting.");
+    Ok(None)
 }
 
 fn play_tts(text: &str, state: Arc<Mutex<MixerState>>) -> Result<()> {
@@ -291,7 +409,8 @@ fn start_monitor(host: &cpal::Host, state: &Arc<Mutex<MixerState>>) -> Option<cp
                 eprintln!("[Error] Could not play monitor stream: {}", e);
                 None
             } else {
-                println!("[MONITOR] Activated on {} ({})", mon_device.name().unwrap_or_else(|_| "Unknown".into()), mode_label);
+                let dev_name = mon_device.description().map(|d| d.name().to_owned()).unwrap_or_else(|_| "Unknown".into());
+                println!("[MONITOR] Activated on {} ({})", dev_name, mode_label);
                 Some(stream)
             }
         }
