@@ -25,6 +25,20 @@ const LOOPBACK_KEYWORDS: &[&str] = &[
     "eqmac", "menubus", "virtual", "wavtap",
 ];
 
+fn device_name(device: &cpal::Device) -> String {
+    device.description().map(|d| d.name().to_owned()).unwrap_or_else(|_| "Unknown".into())
+}
+
+fn is_loopback_device(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    LOOPBACK_KEYWORDS.iter().any(|k| lower.contains(k))
+}
+
+fn advance_reader(count: &mut usize, read: &mut usize, len: usize) {
+    if *count < len { *count += 1; }
+    else { *read = (*read + 1) % len; }
+}
+
 struct MixerState {
     mic_ring: Vec<f32>,
     mic_write: usize,
@@ -78,10 +92,8 @@ impl MixerState {
             for _ in 0..CHANNELS {
                 self.mic_ring[self.mic_write] = mono;
                 self.mic_write = (self.mic_write + 1) % len;
-                if self.main_count < len { self.main_count += 1; }
-                else { self.main_read = (self.main_read + 1) % len; }
-                if self.mon_count < len { self.mon_count += 1; }
-                else { self.mon_read = (self.mon_read + 1) % len; }
+                advance_reader(&mut self.main_count, &mut self.main_read, len);
+                advance_reader(&mut self.mon_count, &mut self.mon_read, len);
             }
             self.mic_signal = self.mic_signal.max(mono.abs());
         }
@@ -259,8 +271,7 @@ async fn tts_handler(
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "Text is empty"})));
     }
 
-    let has_mixer = state.mixer.lock().unwrap().is_some();
-    if !has_mixer {
+    if state.mixer.lock().unwrap().is_none() {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "Audio not running"})));
     }
 
@@ -291,33 +302,19 @@ async fn monitor_mode_handler(
             *monitor = None;
             println!("[MONITOR] Deactivated");
         }
-        "monitor" => {
-            mixer.tts_only_monitor = false;
+        "monitor" | "tts-only" => {
+            mixer.tts_only_monitor = mode == "tts-only";
             if monitor.is_none() {
                 drop(mixer_guard);
                 *monitor = start_monitor(&state.mixer);
             } else {
-                println!("[MONITOR] Mode: Mic + TTS");
-            }
-        }
-        "tts-only" => {
-            mixer.tts_only_monitor = true;
-            if monitor.is_none() {
-                drop(mixer_guard);
-                *monitor = start_monitor(&state.mixer);
-            } else {
-                println!("[MONITOR] Mode: TTS only");
+                println!("[MONITOR] Mode: {}", if mode == "tts-only" { "TTS only" } else { "Mic + TTS" });
             }
         }
         _ => return Json(json!({"error": "Invalid mode. Use: off, monitor, tts-only"})),
     }
 
-    let current_mode = match monitor.is_some() {
-        false => "off",
-        true if mode == "tts-only" => "tts-only",
-        true => "monitor",
-    };
-    Json(json!({"monitor_mode": current_mode}))
+    Json(json!({"monitor_mode": if monitor.is_some() { &mode } else { "off" }}))
 }
 
 async fn volume_handler(
@@ -348,8 +345,7 @@ async fn devices_handler() -> Json<serde_json::Value> {
 
     let mut default_input = 0;
     let inputs: Vec<serde_json::Value> = input_devices.iter().enumerate().map(|(i, d)| {
-        let name = d.description().map(|desc| desc.name().to_owned()).unwrap_or_else(|_| "Unknown".into());
-        // Match the system's default input device by name
+        let name = device_name(d);
         if let Some(ref def) = default_input_device {
             if let Ok(def_desc) = def.description() {
                 if def_desc.name().to_lowercase().trim() == name.to_lowercase().trim() {
@@ -364,12 +360,11 @@ async fn devices_handler() -> Json<serde_json::Value> {
     let mut default_output = None;
     let mut first_loopback = None;
     let outputs: Vec<serde_json::Value> = output_devices.iter().enumerate().map(|(i, d)| {
-        let name = d.description().map(|desc| desc.name().to_owned()).unwrap_or_else(|_| "Unknown".into());
-        let lower = name.to_lowercase();
-        let is_loopback = LOOPBACK_KEYWORDS.iter().any(|k| lower.contains(k));
+        let name = device_name(d);
+        let is_loopback = is_loopback_device(&name);
         if is_loopback {
             if first_loopback.is_none() { first_loopback = Some(i); }
-            if lower.contains("blackhole") && default_output.is_none() { default_output = Some(i); }
+            if name.to_lowercase().contains("blackhole") && default_output.is_none() { default_output = Some(i); }
         }
         json!({"index": i, "name": name, "is_loopback": is_loopback})
     }).collect();
@@ -447,12 +442,9 @@ async fn start_handler(
     }
 
     // Warn if output is not a loopback device
-    if let Ok(desc) = output_device.description() {
-        let name = desc.name().to_owned();
-        let is_loopback = LOOPBACK_KEYWORDS.iter().any(|k| name.to_lowercase().contains(k));
-        if !is_loopback {
-            eprintln!("[WARN] \"{}\" is not a loopback/virtual device.", name);
-        }
+    let out_name = device_name(&output_device);
+    if !is_loopback_device(&out_name) {
+        eprintln!("[WARN] \"{}\" is not a loopback/virtual device.", out_name);
     }
 
     // Stop any existing audio first
@@ -501,20 +493,14 @@ async fn start_handler(
 
     // Set as default macOS input device AFTER streams are running
     // to prevent macOS from reverting when it detects mic usage
-    if body.set_default_input.unwrap_or(false) {
-        if let Ok(desc) = output_device.description() {
-            let name = desc.name().to_owned();
-            let is_loopback = LOOPBACK_KEYWORDS.iter().any(|k| name.to_lowercase().contains(k));
-            if is_loopback {
-                let original = host.default_input_device()
-                    .and_then(|d| d.description().ok())
-                    .map(|desc| desc.name().to_owned());
-                if let Some(ref orig) = original {
-                    *state.original_default_input.lock().unwrap() = Some(orig.clone());
-                }
-                let _ = set_default_input_device(&name);
-            }
+    if body.set_default_input.unwrap_or(false) && is_loopback_device(&out_name) {
+        let original = host.default_input_device()
+            .and_then(|d| d.description().ok())
+            .map(|desc| desc.name().to_owned());
+        if let Some(ref orig) = original {
+            *state.original_default_input.lock().unwrap() = Some(orig.clone());
         }
+        let _ = set_default_input_device(&out_name);
     }
 
     println!("[SYSTEM] Audio started");
@@ -634,9 +620,10 @@ fn start_monitor(state: &Arc<Mutex<Option<MixerState>>>) -> Option<cpal::Stream>
     let mon_state = Arc::clone(state);
 
     // Match monitor sample rate to the mixer's sample rate to prevent pitch shift
-    let target_rate = {
+    let (target_rate, mode_label) = {
         let guard = state.lock().unwrap();
-        guard.as_ref()?.sample_rate
+        let mixer = guard.as_ref()?;
+        (mixer.sample_rate, if mixer.tts_only_monitor { "TTS only" } else { "Mic + TTS" })
     };
 
     let mon_config = mon_device.supported_output_configs()
@@ -651,12 +638,6 @@ fn start_monitor(state: &Arc<Mutex<Option<MixerState>>>) -> Option<cpal::Stream>
         .or_else(|| {
             mon_device.default_output_config().ok().map(|c| c.config())
         })?;
-
-    let mode_label = {
-        let guard = state.lock().unwrap();
-        let mixer = guard.as_ref()?;
-        if mixer.tts_only_monitor { "TTS only" } else { "Mic + TTS" }
-    };
     match mon_device.build_output_stream(
         &mon_config,
         move |data, _| {
@@ -671,8 +652,7 @@ fn start_monitor(state: &Arc<Mutex<Option<MixerState>>>) -> Option<cpal::Stream>
                 eprintln!("[Error] Could not play monitor stream: {}", e);
                 None
             } else {
-                let dev_name = mon_device.description().map(|d| d.name().to_owned()).unwrap_or_else(|_| "Unknown".into());
-                println!("[MONITOR] Activated on {} ({})", dev_name, mode_label);
+                println!("[MONITOR] Activated on {} ({})", device_name(&mon_device), mode_label);
                 Some(stream)
             }
         }
@@ -698,13 +678,17 @@ fn install_blackhole_inner() -> Result<bool> {
     Ok(true)
 }
 
+fn device_property_address(selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress {
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain,
+    }
+}
+
 fn set_default_input_device(device_name: &str) -> Result<()> {
     unsafe {
-        let address = AudioObjectPropertyAddress {
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain,
-        };
+        let address = device_property_address(kAudioHardwarePropertyDevices);
         let mut data_size: u32 = 0;
         let status = AudioObjectGetPropertyDataSize(
             kAudioObjectSystemObject, &address, 0, std::ptr::null(), &mut data_size,
@@ -724,11 +708,7 @@ fn set_default_input_device(device_name: &str) -> Result<()> {
         }
         let mut target_id = None;
         for &device_id in &device_ids {
-            let name_addr = AudioObjectPropertyAddress {
-                mSelector: kAudioDevicePropertyDeviceName,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain,
-            };
+            let name_addr = device_property_address(kAudioDevicePropertyDeviceName);
             let mut name_buf = [0u8; 256];
             let mut name_size: u32 = 256;
             let status = AudioObjectGetPropertyData(
@@ -748,11 +728,7 @@ fn set_default_input_device(device_name: &str) -> Result<()> {
             Some(id) => id,
             None => anyhow::bail!("Device \"{}\" not found", device_name),
         };
-        let set_addr = AudioObjectPropertyAddress {
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain,
-        };
+        let set_addr = device_property_address(kAudioHardwarePropertyDefaultInputDevice);
         let status = AudioObjectSetPropertyData(
             kAudioObjectSystemObject, &set_addr, 0, std::ptr::null(),
             mem::size_of::<AudioDeviceID>() as u32,
